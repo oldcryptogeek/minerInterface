@@ -14,6 +14,9 @@ class CGMiner(BaseMiner):
     def __repr__(self) -> str:
         return f"CGMiner: {str(self.ip)}"
 
+    async def get_hostname(self) -> str:
+        return "CGMiner Unknown"
+
     async def send_config(self):
         return None  # ignore for now
 
@@ -27,7 +30,7 @@ class CGMiner(BaseMiner):
 
     async def send_ssh_command(self, cmd):
         result = None
-        async with self._get_ssh_connection() as conn:
+        async with (await self._get_ssh_connection()) as conn:
             for i in range(3):
                 try:
                     result = await conn.run(cmd)
@@ -48,8 +51,6 @@ class CGMiner(BaseMiner):
                 print("ssh stderr: \n" + result.stderrr)
             if len(result.stdout) <= 0 and len(result.stderr) <= 0:
                 print("ssh stdout stderr empty")
-            else:
-                print(cmd)
             # if result.stdout != "":
             #     print(result.stdout)
             #     if result.stderr != "":
@@ -87,7 +88,7 @@ class CGMiner(BaseMiner):
         await self.send_ssh_command(commands)
 
     async def get_config(self) -> None:
-        async with self._get_ssh_connection() as conn:
+        async with (await self._get_ssh_connection()) as conn:
             command = 'cat /etc/config/cgminer'
             result = await conn.run(command, check=True)
             self._result_handler(result)

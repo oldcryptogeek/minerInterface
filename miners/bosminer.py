@@ -2,7 +2,7 @@ from miners import BaseMiner
 from API.bosminer import BOSMinerAPI
 import asyncssh
 import toml
-import time
+from config.bos import bos_config_convert, general_config_convert_bos
 
 
 class BOSminer(BaseMiner):
@@ -24,16 +24,23 @@ class BOSminer(BaseMiner):
         return conn
 
     async def send_ssh_command(self, cmd: str) -> None:
+        """Sends SSH command to miner."""
+        # creates result variable
         result = None
-        async with self._get_ssh_connection() as conn:
+
+        # runs the command on the miner
+        async with (await self._get_ssh_connection()) as conn:
+            # attempt to run command up to 3 times
             for i in range(3):
                 try:
+                    # save result of the command
                     result = await conn.run(cmd)
                 except Exception as e:
                     print(f"{cmd} error: {e}")
                     if i == 3:
                         return
                     continue
+
         # let the user know the result of the command
         if result is not None:
             if result.stdout != "":
@@ -46,76 +53,50 @@ class BOSminer(BaseMiner):
                 print(cmd)
 
     async def fault_light_on(self) -> None:
+        """Sends command to turn on fault light on the miner."""
         await self.send_ssh_command('miner fault_light on')
 
     async def fault_light_off(self) -> None:
+        """Sends command to turn off fault light on the miner."""
         await self.send_ssh_command('miner fault_light off')
 
     async def restart_backend(self) -> None:
+        """Restart bosminer hashing process."""
         await self.send_ssh_command('/etc/init.d/bosminer restart')
 
     async def reboot(self) -> None:
+        """Reboots power to the physical miner."""
         await self.send_ssh_command('/sbin/reboot')
 
     async def get_config(self) -> None:
-        async with asyncssh.connect(str(self.ip), known_hosts=None, username='root', password='admin',
-                                    server_host_key_algs=['ssh-rsa']) as conn:
+        async with (await self._get_ssh_connection()) as conn:
             async with conn.start_sftp_client() as sftp:
                 async with sftp.open('/etc/bosminer.toml') as file:
                     toml_data = toml.loads(await file.read())
-        self.config = toml_data
-
-    def update_config(self, config: dict) -> None:
-        self.config = config
+        cfg = await bos_config_convert(toml_data)
+        self.config = cfg
 
     async def get_hostname(self) -> str:
-        async with asyncssh.connect(str(self.ip), known_hosts=None, username='root', password='admin',
-                                    server_host_key_algs=['ssh-rsa']) as conn:
-            data = await conn.run('cat /proc/sys/kernel/hostname')
-        return data.stdout.strip()
+        """Attempts to get hostname from miner."""
+        try:
+            async with (await self._get_ssh_connection()) as conn:
+                data = await conn.run('cat /proc/sys/kernel/hostname')
+            return data.stdout.strip()
+        except Exception as e:
+            print(self.ip, e)
+            return "BOSMiner Unknown"
 
-    async def change_config_format(self, update_config: bool = False) -> dict:
-        if not self.config:
-            await self.get_config()
-        config = self.config
-        config['format']['generator'] = 'upstream_data_configurator'
-        config['format']['timestamp'] = int(time.time())
-        if update_config:
-            self.update_config(config)
-        return config
-
-    async def change_config_tuning(self, wattage: int, enabled: bool = True, update_config: bool = False) -> dict:
-        if not self.config:
-            await self.get_config()
-        config = self.config
-        config['autotuning']['psu_power_limit'] = wattage
-        config['autotuning']['enabled'] = enabled
-        if update_config:
-            self.update_config(config)
-        return config
-
-    async def change_config_temp_ctrl(self, target: float = 80.0, hot: float = 100.0,
-                                      dangerous: float = 110.0, update_config: bool = False) -> dict:
-        if not self.config:
-            await self.get_config()
-        config = self.config
-        config['target_temp'] = target
-        config['hot_temp'] = hot
-        config['dangerous_temp'] = dangerous
-        if update_config:
-            self.update_config(config)
-        return config
-
-    async def send_config(self, config: dict) -> None:
-        toml_conf = toml.dumps(config)
-        async with asyncssh.connect(str(self.ip), known_hosts=None, username='root', password='admin',
-                                    server_host_key_algs=['ssh-rsa']) as conn:
+    async def send_config(self, yaml_config) -> None:
+        """Configures miner with yaml config."""
+        toml_conf = await general_config_convert_bos(yaml_config)
+        async with (await self._get_ssh_connection()) as conn:
             async with conn.start_sftp_client() as sftp:
                 async with sftp.open('/etc/bosminer.toml', 'w+') as file:
                     await file.write(toml_conf)
             await conn.run("/etc/init.d/bosminer restart")
 
     async def get_bad_boards(self) -> list:
+        """Checks for and provides list of non working boards."""
         devs = await self.api.devdetails()
         bad = 0
         chains = devs['DEVDETAILS']
@@ -126,6 +107,7 @@ class BOSminer(BaseMiner):
             return [str(self.ip), bad]
 
     async def check_good_boards(self) -> str:
+        """Checks for and provides list for working boards."""
         devs = await self.api.devdetails()
         bad = 0
         chains = devs['DEVDETAILS']
